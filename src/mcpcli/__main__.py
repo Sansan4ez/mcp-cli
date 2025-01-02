@@ -350,6 +350,12 @@ def cli_main():
         help=("Model to use. Defaults to 'gpt-4o-mini' for openai, 'claude-3-5-haiku-latest' for anthropic and 'qwen2.5-coder' for ollama"),
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode to show additional information like tool responses",
+    )
+
     args = parser.parse_args()
 
     # Set default model based on provider
@@ -361,6 +367,10 @@ def cli_main():
     os.environ["LLM_PROVIDER"] = args.provider
     os.environ["LLM_MODEL"] = model
 
+    # Configure logging based on debug flag
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(level=log_level)
+
     try:
         result = anyio.run(run, args.config_file, args.servers, args.command)
         sys.exit(result)
@@ -371,4 +381,3 @@ def cli_main():
 
 if __name__ == "__main__":
     cli_main()
-
