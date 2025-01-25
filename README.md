@@ -85,8 +85,14 @@ The client supports interactive mode, allowing you to execute commands dynamical
 ### Chat Mode
 To enter chat mode and interact with the server:
 
+```bash
 uv run mcp-cli --server sqlite
-
+```
+or for multiple servers:
+```bash
+uv run mcp-cli --server sqlite --server exa --server filesystem --server sequential-thinking --server memory
+```
+and then use 'chat' command to enter chat mode.
 In chat mode, you can use tools and query the server interactively. The provider and model used are specified during startup and displayed as follows:
 
 Entering chat mode using provider 'ollama' and model 'llama3.2'...

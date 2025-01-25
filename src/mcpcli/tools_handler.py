@@ -150,6 +150,32 @@ async def fetch_tools(read_stream, write_stream):
     return tools
 
 
+def truncate_description(description: str, max_length: int = 1024) -> str:
+    """Truncate a tool description to fit within OpenAI's character limit.
+
+    Args:
+        description (str): The original tool description
+        max_length (int): Maximum allowed length (default: 1024 for OpenAI)
+
+    Returns:
+        str: Truncated description that fits within the limit
+    """
+    if not description or len(description) <= max_length:
+        return description
+
+    # Try to find a good breakpoint near the limit
+    truncated = description[:max_length-4]  # Leave room for ellipsis
+    last_period = truncated.rfind('.')
+    last_newline = truncated.rfind('\n')
+
+    # Use the latest sensible breakpoint, or just truncate at the limit if none found
+    breakpoint = max(last_period, last_newline)
+    if breakpoint > max_length // 2:  # Only use breakpoint if it's in latter half
+        truncated = truncated[:breakpoint+1]
+
+    return truncated.rstrip() + "..."
+
+
 def convert_to_openai_tools(tools):
     """Convert tools into OpenAI-compatible function definitions."""
     return [
@@ -157,7 +183,7 @@ def convert_to_openai_tools(tools):
             "type": "function",
             "function": {
                 "name": tool["name"],
-                "description": tool.get("description", ""),
+                "description": truncate_description(tool.get("description", "")),
                 "parameters": tool.get("inputSchema", {}),
             },
         }

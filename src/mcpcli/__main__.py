@@ -281,21 +281,21 @@ async def run(config_path: str, server_names: List[str], command: str = None) ->
     # Load server configurations and establish connections for all servers
     server_streams = []
     context_managers = []
-    for server_name in server_names:
-        server_params = await load_config(config_path, server_name)
-
-        # Establish stdio communication for each server
-        cm = stdio_client(server_params)
-        (read_stream, write_stream) = await cm.__aenter__()
-        context_managers.append(cm)
-        server_streams.append((read_stream, write_stream))
-
-        init_result = await send_initialize(read_stream, write_stream)
-        if not init_result:
-            print(f"[red]Server initialization failed for {server_name}[/red]")
-            return
-
     try:
+        for server_name in server_names:
+            server_params = await load_config(config_path, server_name)
+
+            # Establish stdio communication for each server
+            cm = stdio_client(server_params)
+            (read_stream, write_stream) = await cm.__aenter__()
+            context_managers.append(cm)
+            server_streams.append((read_stream, write_stream))
+
+            init_result = await send_initialize(read_stream, write_stream)
+            if not init_result:
+                print(f"[red]Server initialization failed for {server_name}[/red]")
+                return
+
         if command:
             # Single command mode
             await handle_command(command, server_streams)
@@ -305,8 +305,10 @@ async def run(config_path: str, server_names: List[str], command: str = None) ->
     finally:
         # Clean up all streams
         for cm in context_managers:
-            with anyio.move_on_after(1):  # wait up to 1 second
-                await cm.__aexit__()
+            try:
+                await cm.__aexit__(None, None, None)  # Properly handle context manager exit
+            except Exception as e:
+                logging.debug(f"Error during context manager cleanup: {e}")
 
 def cli_main():
     # setup the parser
@@ -352,6 +354,12 @@ def cli_main():
         help=("Model to use. Defaults to 'gpt-4o-mini' for openai, 'claude-3-5-haiku-latest' for anthropic and 'qwen2.5-coder' for ollama"),
     )
 
+    parser.add_argument(
+        "--debug",
+        action="store_true",
+        help="Enable debug mode to show additional information like tool responses",
+    )
+
     args = parser.parse_args()
 
     # Set default model based on provider
@@ -362,6 +370,10 @@ def cli_main():
     )
     os.environ["LLM_PROVIDER"] = args.provider
     os.environ["LLM_MODEL"] = model
+
+    # Configure logging based on debug flag
+    log_level = logging.DEBUG if args.debug else logging.INFO
+    logging.basicConfig(level=log_level)
 
     try:
         if args.all:
@@ -376,4 +388,3 @@ def cli_main():
 
 if __name__ == "__main__":
     cli_main()
-

@@ -1,6 +1,7 @@
 # chat_handler.py
 import json
-import asyncio
+import os
+import logging
 
 from rich import print
 from rich.markdown import Markdown
@@ -10,109 +11,195 @@ from rich.prompt import Prompt
 from mcpcli.llm_client import LLMClient
 from mcpcli.system_prompt_generator import SystemPromptGenerator
 from mcpcli.tools_handler import convert_to_openai_tools, fetch_tools, handle_tool_call
+from mcpcli.messages.send_call_tool import send_call_tool
 
-async def get_input(prompt: str):
-    """Get input asynchronously."""
-    loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: Prompt.ask(prompt).strip())
+# Configure logging
+logger = logging.getLogger(__name__)
 
-async def handle_chat_mode(server_streams, provider="openai", model="gpt-4o-mini"):
+async def handle_chat_mode(server_streams, provider="openai", model="gpt-4o-mini", debug=False):
     """Enter chat mode with multi-call support for autonomous tool chaining."""
     try:
         tools = []
-        for read_stream, write_stream in server_streams:
-            tools.extend(await fetch_tools(read_stream, write_stream))
+        tool_to_server = {}  # Mapping of tool name to server streams
+        for i, (read_stream, write_stream) in enumerate(server_streams):
+            server_tools = await fetch_tools(read_stream, write_stream)
+            for tool in server_tools:
+                tool_name = tool.get('name')
+                if tool_name:
+                    tools.append(tool)
+                    tool_to_server[tool_name] = (read_stream, write_stream)
 
-        # for (read_stream, write_stream) in server_streams:
-        # tools = await fetch_tools(read_stream, write_stream)
         if not tools:
             print("[red]No tools available. Exiting chat mode.[/red]")
             return
 
         system_prompt = generate_system_prompt(tools)
         openai_tools = convert_to_openai_tools(tools)
-        client = LLMClient(provider=provider, model=model)
         conversation_history = [{"role": "system", "content": system_prompt}]
 
-        while True:
-            try:
-                # Change prompt to yellow
-                user_message = await get_input("[bold yellow]>[/bold yellow]")
-                if user_message.lower() in ["exit", "quit"]:
-                    print(Panel("Exiting chat mode.", style="bold red"))
-                    break
-
-                # User panel in bold yellow
-                user_panel_text = user_message if user_message else "[No Message]"
-                print(Panel(user_panel_text, style="bold yellow", title="You"))
-
-                conversation_history.append({"role": "user", "content": user_message})
-                await process_conversation(
-                    client, conversation_history, openai_tools, server_streams
-                )
-
-            except Exception as e:
-                print(f"[red]Error processing message:[/red] {e}")
-                continue
+        # Pass the tool_to_server mapping and tools to the conversation processor
+        await process_conversation(
+            client=None,  # LLMClient will be instantiated within process_conversation
+            conversation_history=conversation_history,
+            openai_tools=openai_tools,
+            tool_to_server=tool_to_server,
+            tools=tools,
+            debug=debug
+        )
     except Exception as e:
         print(f"[red]Error in chat mode:[/red] {e}")
 
 
 async def process_conversation(
-    client, conversation_history, openai_tools, server_streams
+    client,
+    conversation_history,
+    openai_tools,
+    tool_to_server,
+    tools,
+    debug=False
 ):
     """Process the conversation loop, handling tool calls and responses."""
+    # Initialize LLMClient here to ensure it's used within the correct context
+    provider = os.getenv("LLM_PROVIDER", "openai")
+    model = os.getenv("LLM_MODEL", "gpt-4o-mini")
+    client = LLMClient(provider=provider, model=model)
+    # conversation_history already contains the system prompt
+
     while True:
-        completion = client.create_completion(
-            messages=conversation_history,
-            tools=openai_tools,
-        )
+        try:
+            user_message = Prompt.ask("[bold yellow]>[/bold yellow]").strip()
+            if user_message.lower() in ["exit", "quit"]:
+                print(Panel("Exiting chat mode.", style="bold red"))
+                break
 
-        response_content = completion.get("response", "No response")
-        tool_calls = completion.get("tool_calls", [])
+            user_panel_text = user_message if user_message else "[No Message]"
+            print(Panel(user_panel_text, style="bold yellow", title="You"))
 
-        if tool_calls:
-            for tool_call in tool_calls:
-                # Extract tool_name and raw_arguments as before
-                if hasattr(tool_call, "function"):
-                    tool_name = getattr(tool_call.function, "name", "unknown tool")
-                    raw_arguments = getattr(tool_call.function, "arguments", {})
-                elif isinstance(tool_call, dict) and "function" in tool_call:
-                    fn_info = tool_call["function"]
-                    tool_name = fn_info.get("name", "unknown tool")
-                    raw_arguments = fn_info.get("arguments", {})
-                else:
-                    tool_name = "unknown tool"
-                    raw_arguments = {}
+            conversation_history.append({"role": "user", "content": user_message})
+            completion = client.create_completion(
+                messages=conversation_history,
+                tools=openai_tools,
+            )
 
-                # If raw_arguments is a string, try to parse it as JSON
-                if isinstance(raw_arguments, str):
+            response_content = completion.get("response", "No response")
+            tool_calls = completion.get("tool_calls", [])
+
+            if tool_calls:
+                tool_responses = []  # Collect all tool responses
+                # First, add the assistant's message with tool calls
+                assistant_message = {
+                    "role": "assistant",
+                    "content": response_content if response_content else "I'll help you with that.",
+                    "tool_calls": [
+                        {
+                            "id": tool_call.id,
+                            "type": "function",
+                            "function": {
+                                "name": tool_call.function.name,
+                                "arguments": tool_call.function.arguments
+                            }
+                        } for tool_call in tool_calls
+                    ]
+                }
+                conversation_history.append(assistant_message)
+
+                for tool_call in tool_calls:
                     try:
-                        raw_arguments = json.loads(raw_arguments)
-                    except json.JSONDecodeError:
-                        # If it's not valid JSON, just display as is
-                        pass
+                        tool_name = tool_call.function.name
+                    except AttributeError:
+                        print(f"[red]Error: 'function' attribute not found in tool_call: {tool_call}[/red]")
+                        continue
 
-                # Now raw_arguments should be a dict or something we can pretty-print as JSON
-                tool_args_str = json.dumps(raw_arguments, indent=2)
+                    if not tool_name:
+                        print(f"[red]Invalid tool call: {tool_call}[/red]")
+                        continue
 
-                tool_md = f"**Tool Call:** {tool_name}\n\n```json\n{tool_args_str}\n```"
-                print(
-                    Panel(
-                        Markdown(tool_md), style="bold magenta", title="Tool Invocation"
+                    server_stream = tool_to_server.get(tool_name)
+                    if not server_stream:
+                        print(f"[red]Tool '{tool_name}' not found on any server.[/red]")
+                        continue
+
+                    read_stream, write_stream = server_stream
+                    try:
+                        arguments_str = tool_call.function.arguments or "{}"
+                        arguments = json.loads(arguments_str)
+                    except json.JSONDecodeError as e:
+                        print(f"[red]Error parsing arguments for tool '{tool_name}': {e}[/red]")
+                        arguments = {}
+                    except AttributeError:
+                        print(f"[red]Error: 'arguments' attribute not found in tool_call.function: {tool_call.function}[/red]")
+                        arguments = {}
+
+                    # Display Tool Invocation
+                    # Encode arguments as JSON with ensure_ascii=False for proper Unicode display
+                    formatted_args = json.dumps(arguments, indent=2, ensure_ascii=False)
+                    tool_md = f"**Tool Call:** {tool_name}\n\n```json\n{formatted_args}\n```"
+                    print(
+                        Panel(
+                            Markdown(tool_md), style="bold magenta", title="Tool Invocation"
+                        )
                     )
+
+                    # Send the tool call to the appropriate server
+                    result = await send_call_tool(tool_name, arguments, read_stream, write_stream)
+                    if result.get("isError"):
+                        error_msg = result.get("error", "Unknown error")
+                        print(f"[red]Error calling tool '{tool_name}': {error_msg}[/red]")
+                        tool_responses.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": tool_name,
+                            "content": f"Error: {error_msg}"
+                        })
+                    else:
+                        response_content = result.get("content", "No content")
+                        if debug:
+                            logger.debug(f"Tool Response for {tool_name}: {response_content}")
+                            print(
+                                Panel(
+                                    Markdown(f"### Tool Response\n\n{response_content}"),
+                                    style="green",
+                                )
+                            )
+                        tool_responses.append({
+                            "tool_call_id": tool_call.id,
+                            "role": "tool",
+                            "name": tool_name,
+                            "content": response_content
+                        })
+
+                # Add tool responses to conversation history
+                for tool_response in tool_responses:
+                    # Ensure tool response content is not null
+                    if tool_response["content"] is None:
+                        tool_response["content"] = "No response from tool"
+                    conversation_history.append(tool_response)
+
+                # Get LLM's interpretation of the tool responses
+                completion = client.create_completion(
+                    messages=conversation_history,
+                    tools=openai_tools,
                 )
 
-                await handle_tool_call(tool_call, conversation_history, server_streams)
-            continue
+                response_content = completion.get("response") or "I processed the tool responses but have nothing specific to add."
+                # Display the LLM's response
+                assistant_panel_text = response_content if response_content else "[No Response]"
+                print(
+                    Panel(Markdown(assistant_panel_text), style="bold blue", title="Assistant")
+                )
+                conversation_history.append({"role": "assistant", "content": response_content})
+                continue
 
-        # Assistant panel with Markdown
-        assistant_panel_text = response_content if response_content else "[No Response]"
-        print(
-            Panel(Markdown(assistant_panel_text), style="bold blue", title="Assistant")
-        )
-        conversation_history.append({"role": "assistant", "content": response_content})
-        break
+            # Assistant panel with Markdown
+            assistant_panel_text = response_content if response_content else "[No Response]"
+            print(
+                Panel(Markdown(assistant_panel_text), style="bold blue", title="Assistant")
+            )
+            conversation_history.append({"role": "assistant", "content": response_content})
+
+        except Exception as e:
+            print(f"[red]Error processing message:[/red] {e}")
+            continue
 
 
 def generate_system_prompt(tools):
