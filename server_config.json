@@ -3,6 +3,43 @@
     "sqlite": {
       "command": "uvx",
       "args": ["mcp-server-sqlite", "--db-path", "test.db"]
+    },
+    "exa": {
+      "command": "npx",
+      "args": ["/exa-mcp-server/build/index.js"],
+      "env": {
+        "EXA_API_KEY": "YOUR_EXA_API_KEY_HERE"
+      }
+    },
+    "filesystem": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-filesystem",
+        "/mcp_test_folder"
+      ]
+    },
+    "mcp-obsidian": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "mcp-obsidian",
+        "/your_notes_folder"
+      ]
+    },
+    "sequential-thinking": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-sequential-thinking"
+      ]
+    },
+    "memory": {
+      "command": "npx",
+      "args": [
+        "-y",
+        "@modelcontextprotocol/server-memory"
+      ]
     }
   }
 }

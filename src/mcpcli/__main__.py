@@ -286,21 +286,21 @@ async def run(config_path: str, server_names: List[str], command: str = None) ->
     # Load server configurations and establish connections for all servers
     server_streams = []
     context_managers = []
-    for server_name in server_names:
-        server_params = await load_config(config_path, server_name)
-
-        # Establish stdio communication for each server
-        cm = stdio_client(server_params)
-        (read_stream, write_stream) = await cm.__aenter__()
-        context_managers.append(cm)
-        server_streams.append((read_stream, write_stream))
-
-        init_result = await send_initialize(read_stream, write_stream)
-        if not init_result:
-            print(f"[red]Server initialization failed for {server_name}[/red]")
-            return
-
     try:
+        for server_name in server_names:
+            server_params = await load_config(config_path, server_name)
+
+            # Establish stdio communication for each server
+            cm = stdio_client(server_params)
+            (read_stream, write_stream) = await cm.__aenter__()
+            context_managers.append(cm)
+            server_streams.append((read_stream, write_stream))
+
+            init_result = await send_initialize(read_stream, write_stream)
+            if not init_result:
+                print(f"[red]Server initialization failed for {server_name}[/red]")
+                return
+
         if command:
             # Single command mode
             await handle_command(command, server_streams)
@@ -310,8 +310,10 @@ async def run(config_path: str, server_names: List[str], command: str = None) ->
     finally:
         # Clean up all streams
         for cm in context_managers:
-            with anyio.move_on_after(1):  # wait up to 1 second
-                await cm.__aexit__()
+            try:
+                await cm.__aexit__(None, None, None)  # Properly handle context manager exit
+            except Exception as e:
+                logging.debug(f"Error during context manager cleanup: {e}")
 
 def cli_main():
     # setup the parser

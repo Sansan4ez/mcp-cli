@@ -4,3 +4,4 @@ __pycache__
 .pytest_cache
 dist/
 .pdm-build
+my_server_config.json
